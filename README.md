@@ -35,46 +35,13 @@ This project ingests the [Olist Brazilian E-Commerce dataset](https://www.kaggle
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        DATA SOURCES                             │
-│          CSV Files in Unity Catalog Volume                      │
-│     /Volumes/workspace/default/datasalman/olist_raw/            │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     BRONZE LAYER                                │
-│                  workspace.bronze.*                             │
-│                                                                 │
-│  Raw ingestion — data stored as-is from source CSV files        │
-│  One technical fix: embedded newlines in order_reviews          │
-│  cleaned on-the-fly using multiLine=True + regexp_replace       │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     SILVER LAYER                                │
-│                  workspace.silver.*                             │
-│                                                                 │
-│  Cleaned & validated Delta Tables                               │
-│  Data quality fixes applied (see section below)                 │
-│  No business aggregations — standardization only                │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      GOLD LAYER                                 │
-│                   workspace.gold.*                              │
-│                                                                 │
-│  Star Schema — business-ready Delta Tables                      │
-│  1 fact table + 4 dimension tables                              │
-│  Surrogate keys on all dimension tables (Kimball methodology)   │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │
-                          ▼
-                   BI / Analytics
-```
+![Architecture](images/architecture.png)
+
+**Bronze Layer** — Raw ingestion from CSV files stored in Unity Catalog Volume. Data is stored as-is with no business transformations. One technical fix is applied on `order_reviews`: embedded newlines in comment columns are cleaned on-the-fly using `multiLine=True` and `regexp_replace`.
+
+**Silver Layer** — Cleaned and validated Delta Tables. Data quality issues are handled here (see section below). No business aggregations — standardization and deduplication only.
+
+**Gold Layer** — Star schema Delta Tables optimized for BI and analytics. Surrogate keys are applied on all dimension tables following Kimball methodology.
 
 ---
 
@@ -120,44 +87,42 @@ Source: [Olist Brazilian E-Commerce Dataset](https://www.kaggle.com/datasets/oli
 | Silver | `products` | 610 rows with NULL `product_category_name` | Replace with `'unknown'` |
 | Silver | `sellers` | 3 rows with corrupt UTF-8 encoding in `seller_city` | Exclude those rows |
 
+Full data quality check scripts are available in the [`data_quality/`](data_quality/) folder.
+
 ---
 
 ## Star Schema Design
 
 ```
-                          ┌──────────────┐
-                          │   dim_date   │
-                          │──────────────│
-                          │ date_key (PK)│
-                          │ full_date    │
-                          │ year         │
-                          │ quarter      │
-                          │ month        │
-                          │ ...          │
-                          └──────┬───────┘
-                                 │
-┌────────────────┐    ┌──────────┴──────────┐    ┌─────────────────┐
-│ dim_customers  │    │      fact_sales      │    │   dim_products  │
-│────────────────│    │─────────────────────│    │─────────────────│
-│customer_key(PK)├────│customer_key    (FK) │    │product_key (PK) │
-│customer_id     │    │product_key     (FK) ├────│product_id       │
-│customer_city   │    │seller_key      (FK) │    │category_name    │
-│customer_state  │    │date_key        (FK) │    │category_english │
-│geolocation_lat │    │─────────────────────│    │product_weight_g │
-│geolocation_lng │    │order_id             │    │...              │
-│...             │    │order_item_id        │    └─────────────────┘
-└────────────────┘    │order_status         │
-                      │price                │    ┌─────────────────┐
-                      │freight_value        │    │   dim_sellers   │
-                      │total_payment_value  │    │─────────────────│
-                      │review_score         │    │seller_key  (PK) │
-                      │delivery_time_days   ├────│seller_id        │
-                      │delivery_delay_days  │    │seller_city      │
-                      │is_late              │    │seller_state     │
-                      │...                  │    │geolocation_lat  │
-                      └─────────────────────┘    │geolocation_lng  │
-                                                 │...              │
-                                                 └─────────────────┘
+                      ┌──────────────┐
+                      │   dim_date   │
+                      │──────────────│
+                      │ date_key (PK)│
+                      │ full_date    │
+                      │ year, quarter│
+                      │ month, day   │
+                      └──────┬───────┘
+                             │
+┌────────────────┐  ┌────────┴────────────┐  ┌─────────────────┐
+│ dim_customers  │  │      fact_sales      │  │   dim_products  │
+│────────────────│  │─────────────────────│  │─────────────────│
+│customer_key(PK)├──│customer_key    (FK) │  │product_key (PK) │
+│customer_id     │  │product_key     (FK) ├──│product_id       │
+│customer_city   │  │seller_key      (FK) │  │category_name    │
+│customer_state  │  │date_key        (FK) │  │category_english │
+│geolocation_lat │  │─────────────────────│  │product_weight_g │
+│geolocation_lng │  │order_id             │  └─────────────────┘
+└────────────────┘  │order_item_id        │
+                    │order_status         │  ┌─────────────────┐
+                    │price                │  │   dim_sellers   │
+                    │freight_value        │  │─────────────────│
+                    │total_payment_value  │  │seller_key  (PK) │
+                    │review_score         ├──│seller_id        │
+                    │delivery_time_days   │  │seller_city      │
+                    │delivery_delay_days  │  │seller_state     │
+                    │is_late              │  │geolocation_lat  │
+                    └─────────────────────┘  │geolocation_lng  │
+                                             └─────────────────┘
 ```
 
 **Surrogate Key Pattern (Kimball methodology)**:
@@ -171,11 +136,24 @@ Source: [Olist Brazilian E-Commerce Dataset](https://www.kaggle.com/datasets/oli
 ## Project Structure
 
 ```
-olist_dwh/
-├── 01_bronze_ingestion.ipynb    # Raw CSV ingestion to Bronze Delta Tables
-├── 02_silver_cleaning.ipynb     # Data quality fixes, Bronze → Silver
-├── 03_gold_modeling.ipynb       # Star schema modeling, Silver → Gold
-└── README.md                    # This file
+olist-data-warehouse/
+├── images/
+│   └── architecture.png                  # Architecture diagram
+├── notebook/
+│   ├── 01_bronze_ingestion.ipynb         # Raw CSV ingestion to Bronze Delta Tables
+│   ├── 02_silver_cleaning.ipynb          # Data quality fixes, Bronze → Silver
+│   └── 03_gold_modeling.ipynb            # Star schema modeling, Silver → Gold
+├── data_quality/
+│   ├── check_customers.sql               # DQ checks for customers table
+│   ├── check_geolocation.sql             # DQ checks for geolocation table
+│   ├── check_order_items.sql             # DQ checks for order_items table
+│   ├── check_order_payments.sql          # DQ checks for order_payments table
+│   ├── check_order_reviews.sql           # DQ checks for order_reviews table
+│   ├── check_orders.sql                  # DQ checks for orders table
+│   ├── check_products.sql                # DQ checks for products table
+│   └── check_sellers.sql                 # DQ checks for sellers table
+├── LICENSE
+└── README.md
 ```
 
 ---
@@ -190,17 +168,19 @@ olist_dwh/
 Run notebooks **in sequence** — each layer depends on the previous:
 
 ```
-1. 01_bronze_ingestion.ipynb
-2. 02_silver_cleaning.ipynb
-3. 03_gold_modeling.ipynb
+1. notebook/01_bronze_ingestion.ipynb
+2. notebook/02_silver_cleaning.ipynb
+3. notebook/03_gold_modeling.ipynb
 ```
 
 ### Expected Output
 After running all notebooks, the following Delta Tables will be available:
 
-**Bronze** (raw): `workspace.bronze.*` — 9 tables  
-**Silver** (cleaned): `workspace.silver.*` — 9 tables  
-**Gold** (star schema): `workspace.gold.*` — 5 tables (4 dims + 1 fact)
+| Layer | Schema | Tables |
+|-------|--------|--------|
+| Bronze | `workspace.bronze` | 9 tables (raw) |
+| Silver | `workspace.silver` | 9 tables (cleaned) |
+| Gold | `workspace.gold` | 5 tables (4 dims + 1 fact) |
 
 ---
 
